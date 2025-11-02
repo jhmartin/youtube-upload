@@ -1,23 +1,26 @@
 #!/usr/bin/python3
-
-# This script uploads a video to YouTube using the YouTube Data API v3.
-# It uses OAuth 2.0 for authentication, adapted for headless systems.
-# Supports resumable uploads, video metadata, thumbnail uploads, and playlist addition.
-# Automatically refreshes tokens to prevent manual re-authentication.
-# Exits with non-zero status code on critical upload errors (e.g., 400 uploadLimitExceeded).
-# Validates configuration file paths and exits with meaningful errors if invalid.
-# @version 1.3.3, 2025-09-26
+"""
+This script uploads a video to YouTube using the YouTube Data API v3.
+It uses OAuth 2.0 for authentication, adapted for headless systems.
+Supports resumable uploads, video metadata, thumbnail uploads, and playlist addition.
+Automatically refreshes tokens to prevent manual re-authentication.
+Exits with non-zero status code on critical upload errors (e.g., 400 uploadLimitExceeded).
+Validates configuration file paths and exits with meaningful errors if invalid.
+@version 1.3.3, 2025-09-26
+"""
 
 import configparser
 import http.client
-import httplib2
 import json
 import os
 import random
 import sys
 import time
 import logging
+import urllib.error  # Handle URL-related errors
 from datetime import datetime, timedelta, timezone
+
+import httplib2
 
 from googleapiclient.discovery import build  # Build API client
 from googleapiclient.errors import HttpError  # Handle API errors
@@ -26,7 +29,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow  # OAuth flow for authent
 from google.auth.exceptions import RefreshError  # Handle token refresh errors
 from google.auth.transport.requests import Request  # HTTP request for token refresh
 from google.oauth2.credentials import Credentials  # Manage OAuth credentials
-import urllib.error  # Handle URL-related errors
 
 # Load configuration from config.cfg
 config_file_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'config.cfg')  # Path to config file
@@ -107,62 +109,63 @@ YOUTUBE_API_SERVICE_NAME = "youtube"  # YouTube API service name
 YOUTUBE_API_VERSION = "v3"  # YouTube API version
 
 # Error message for missing client_secrets.json
-MISSING_CLIENT_SECRETS_MESSAGE = """
+MISSING_CLIENT_SECRETS_MESSAGE = f"""
 WARNING: Please configure OAuth 2.0
 
 To make this sample run you will need to populate the client_secrets.json file
 found at:
 
-   %s
+   {os.path.abspath(os.path.join(os.path.dirname(__file__), CLIENT_SECRETS_FILE))}
 
 with information from the API Console
 https://console.cloud.google.com/
 
 For more information about the client_secrets.json file format, please visit:
 https://developers.google.com/api-client-library/python/guide/aaa_client_secrets
-""" % os.path.abspath(os.path.join(os.path.dirname(__file__), CLIENT_SECRETS_FILE))
+"""
 
 def check_files():
     """Check if required files and directories exist and are accessible."""
     # Validate client_secrets_file
     if not os.path.exists(CLIENT_SECRETS_FILE):
-        logger.error(f"Client secrets file '{CLIENT_SECRETS_FILE}' does not exist.")
+        logger.error("Client secrets file '%s' does not exist.", CLIENT_SECRETS_FILE)
         print(MISSING_CLIENT_SECRETS_MESSAGE)
         sys.exit(1)  # Exit with non-zero status code
     if not os.path.isfile(CLIENT_SECRETS_FILE):
-        logger.error(f"Path '{CLIENT_SECRETS_FILE}' is not a valid file.")
+        logger.error("Path '%s' is not a valid file.", CLIENT_SECRETS_FILE)
         sys.exit(1)  # Exit with non-zero status code
 
     # Validate oauth2_storage_file directory
     oauth2_dir = os.path.dirname(OAUTH2_STORAGE_FILE)
     if not os.path.exists(oauth2_dir):
-        logger.error(f"Directory for OAuth storage file '{oauth2_dir}' does not exist.")
+        logger.error("Directory for OAuth storage file '%s' does not exist.", oauth2_dir)
         sys.exit(1)  # Exit with non-zero status code
     if not os.access(oauth2_dir, os.W_OK):
-        logger.error(f"Directory for OAuth storage file '{oauth2_dir}' is not writable.")
+        logger.error("Directory for OAuth storage file '%s' is not writable.", oauth2_dir)
         sys.exit(1)  # Exit with non-zero status code
 
     # Validate log_file directory
     log_dir = os.path.dirname(LOG_FILE)
     if not os.path.exists(log_dir):
-        logger.error(f"Directory for log file '{log_dir}' does not exist.")
+        logger.error("Directory for log file '%s' does not exist.", log_dir)
         sys.exit(1)  # Exit with non-zero status code
     if not os.access(log_dir, os.W_OK):
-        logger.error(f"Directory for log file '{log_dir}' is not writable.")
+        logger.error("Directory for log file '%s' is not writable.", log_dir)
         sys.exit(1)  # Exit with non-zero status code
 
 def load_tokens():
     """Load OAuth tokens from file or return None if not found."""
     if os.path.exists(OAUTH2_STORAGE_FILE):  # Check if token file exists
         try:
-            with open(OAUTH2_STORAGE_FILE, "r") as f:
-                logger.info(f"Loading tokens from {OAUTH2_STORAGE_FILE}")
+            with open(OAUTH2_STORAGE_FILE, "r",  encoding="utf-8") as f:
+                logger.info("Loading tokens from %s", OAUTH2_STORAGE_FILE)
                 return json.load(f)  # Read token JSON
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load OAuth tokens from '{OAUTH2_STORAGE_FILE}': {e}")
-            os.remove(OAUTH2_STORAGE_FILE) if os.path.exists(OAUTH2_STORAGE_FILE) else None
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to load OAuth tokens from '%s'", OAUTH2_STORAGE_FILE)
+            if os.path.exists(OAUTH2_STORAGE_FILE):
+                os.remove(OAUTH2_STORAGE_FILE)
             return None
-    logger.warning(f"No token file found at {OAUTH2_STORAGE_FILE}, new authentication required.")
+    logger.warning("No token file found at %s, new authentication required.", OAUTH2_STORAGE_FILE)
     return None
 
 def save_tokens(credentials):
@@ -177,11 +180,11 @@ def save_tokens(credentials):
         "expiry": credentials.expiry.isoformat() if credentials.expiry else None
     }
     try:
-        with open(OAUTH2_STORAGE_FILE, "w") as f:  # Write tokens to file
+        with open(OAUTH2_STORAGE_FILE, "w", encoding="utf-8") as f:  # Write tokens to file
             json.dump(tokens, f)
-            logger.info(f"Credentials saved to {OAUTH2_STORAGE_FILE}, expiry={credentials.expiry}")
-    except OSError as e:
-        logger.error(f"Failed to save OAuth tokens to '{OAUTH2_STORAGE_FILE}': {e}")
+            logger.info("Credentials saved to %d, expiry=%s", OAUTH2_STORAGE_FILE, credentials.expiry)
+    except OSError:
+        logger.exception("Failed to save OAuth tokens to '%s'", OAUTH2_STORAGE_FILE)
         sys.exit(1)  # Exit with non-zero status code
 
 def refresh_token_with_retry(creds):
@@ -190,25 +193,25 @@ def refresh_token_with_retry(creds):
     while retry_count < MAX_RETRIES:  # Retry up to MAX_RETRIES
         try:
             creds.refresh(Request())  # Attempt token refresh
-            logger.info(f"Token refresh successful: new expiry={creds.expiry}")
+            logger.info("Token refresh successful: new expiry=%s", creds.expiry)
             save_tokens(creds)  # Save refreshed tokens
             return True
-        except HttpError as e:
-            logger.error(f"HttpError refreshing token (attempt {retry_count+1}/{MAX_RETRIES}): status={e.resp.status}, content={e.content}")
-        except RefreshError as e:
-            logger.error(f"RefreshError refreshing token (attempt {retry_count+1}/{MAX_RETRIES}): {e}")
-        except urllib.error.URLError as e:
-            logger.error(f"Network error refreshing token (attempt {retry_count+1}/{MAX_RETRIES}): {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error refreshing token (attempt {retry_count+1}/{MAX_RETRIES}): {e}")
+        except HttpError:
+            logger.error("HttpError refreshing token (attempt %d/%d): status=%d, content=%s", retry_count+1, MAX_RETRIES, e.resp.status, e.content)
+        except RefreshError:
+            logger.exception("RefreshError refreshing token (attempt %d/%d)", retry_count+1, MAX_RETRIES)
+        except urllib.error.URLError:
+            logger.exception("Network error refreshing token (attempt %d/%d)", retry_count+1, MAX_RETRIES)
+        except Exception:
+            logger.exception("Unexpected error refreshing token (attempt %d/%d)", retry_count+1, MAX_RETRIES)
         retry_count += 1
         sleep_seconds = (2 ** retry_count) + random.random()  # Exponential backoff with jitter
-        logger.info(f"Retrying token refresh in {sleep_seconds:.2f} seconds...")
+        logger.info("Retrying token refresh in %s seconds...", f"{sleep_seconds:.2f}")
         time.sleep(sleep_seconds)
-    logger.error(f"Token refresh failed after {MAX_RETRIES} retries.")
+    logger.error("Token refresh failed after %d retries.", MAX_RETRIES)
     return False
 
-def get_authenticated_service(args):
+def get_authenticated_service(authargs):
     """
     Get an authenticated YouTube service object for headless systems.
     Ensures robust token refresh to avoid manual re-authentication.
@@ -227,7 +230,7 @@ def get_authenticated_service(args):
                 token_uri=tokens["token_uri"],
                 scopes=tokens["scopes"]
             )
-            logger.info(f"Loaded credentials: token={creds.token[:10]}..., expiry={creds.expiry}, refresh_token={creds.refresh_token[:10] if creds.refresh_token else 'None'}...")
+            logger.info("Loaded credentials: token=%s, expiry=%s, refresh_token=%s", creds.token[:10], creds.expiry, creds.refresh_token[:10] if creds.refresh_token else 'None')
 
             # Check token expiry and refresh proactively
             current_time = datetime.now(timezone.utc)  # Get current UTC time
@@ -240,12 +243,12 @@ def get_authenticated_service(args):
                 if creds.expiry.tzinfo is None:  # Ensure timezone-aware expiry
                     expiry_aware = creds.expiry.replace(tzinfo=timezone.utc)
                 time_to_expiry = expiry_aware - current_time
-                logger.info(f"Token expiry: {creds.expiry}, time to expiry: {time_to_expiry}")
+                logger.info("Token expiry: %s, time to expiry: %s", creds.expiry, time_to_expiry)
                 should_refresh = (
                     creds.expired or  # Token is expired
                     time_to_expiry.total_seconds() < 600 or  # Less than 10 minutes remaining
                     time_to_expiry.total_seconds() <= FORCE_TOKEN_REFRESH_DAYS * 24 * 60 * 60 or  # Within refresh window
-                    args.force_refresh  # Forced refresh via argument
+                    authargs.force_refresh  # Forced refresh via argument
                 )
             else:
                 logger.warning("No expiry set in credentials, forcing refresh.")
@@ -256,15 +259,18 @@ def get_authenticated_service(args):
                 success = refresh_token_with_retry(creds)  # Try refreshing token
                 if not success or not creds.valid:
                     logger.error("Token refresh failed or token still invalid, forcing new authentication.")
-                    os.remove(OAUTH2_STORAGE_FILE) if os.path.exists(OAUTH2_STORAGE_FILE) else None  # Remove invalid token file
+                    if os.path.exists(OAUTH2_STORAGE_FILE):
+                        os.remove(OAUTH2_STORAGE_FILE) # Remove invalid token file
                     creds = None
-        except (ValueError, json.JSONDecodeError) as e:
-            logger.error(f"Invalid or corrupted credentials file ({e}), initiating new authentication.")
-            os.remove(OAUTH2_STORAGE_FILE) if os.path.exists(OAUTH2_STORAGE_FILE) else None  # Remove corrupted file
+        except (ValueError, json.JSONDecodeError):
+            logger.exception("Invalid or corrupted credentials file, initiating new authentication.")
+            if os.path.exists(OAUTH2_STORAGE_FILE):  # Remove corrupted file
+                os.remove(OAUTH2_STORAGE_FILE)  # Remove corrupted file
             creds = None
-        except Exception as e:
-            logger.error(f"Unexpected error loading credentials ({e}), initiating new authentication.")
-            os.remove(OAUTH2_STORAGE_FILE) if os.path.exists(OAUTH2_STORAGE_FILE) else None
+        except Exception:
+            logger.exception("Unexpected error loading credentials, initiating new authentication.")
+            if os.path.exists(OAUTH2_STORAGE_FILE):
+                os.remove(OAUTH2_STORAGE_FILE)
             creds = None
 
     if not creds or not creds.valid:  # No valid credentials, start new authentication
@@ -277,21 +283,21 @@ def get_authenticated_service(args):
             include_granted_scopes='true',
             prompt='select_account'  # Avoid invalidating existing tokens
         )
-        logger.info(f"Please visit this URL to authorize the application: {authorization_url}")
+        logger.info("Please visit this URL to authorize the application: %s", authorization_url)
         print(f"Please visit this URL to authorize the application:\n{authorization_url}")
         code = input("Enter the authorization code: ").strip()  # Get auth code from user
-        logger.info(f"Authorization code entered: {code}")
+        logger.info("Authorization code entered: %s", code)
 
         try:
             flow.fetch_token(code=code)  # Exchange code for tokens
             creds = flow.credentials
-            logger.info(f"Credentials obtained: token={creds.token[:10]}..., expiry={creds.expiry}, refresh_token={creds.refresh_token[:10] if creds.refresh_token else 'None'}...")
+            logger.info("Credentials obtained: token=%s, expiry=%s, refresh_token=%s", creds.token[:10], creds.expiry, creds.refresh_token[:10] if creds.refresh_token else 'None')
             if not creds.expiry:  # Set default expiry if none provided
                 logger.warning("No expiry set after initial authentication, setting manually.")
                 creds.expiry = datetime.now(timezone.utc) + timedelta(seconds=3600)
             save_tokens(creds)  # Save new credentials
-        except Exception as e:
-            logger.error(f"Failed to fetch token with code: {e}")
+        except Exception:
+            logger.exception("Failed to fetch token with code")
             sys.exit(1)
 
     # Final validation and refresh
@@ -300,12 +306,13 @@ def get_authenticated_service(args):
         success = refresh_token_with_retry(creds)
         if not success:
             logger.error("Final refresh attempt failed. Please re-authenticate manually.")
-            os.remove(OAUTH2_STORAGE_FILE) if os.path.exists(OAUTH2_STORAGE_FILE) else None
+            if os.path.exists(OAUTH2_STORAGE_FILE):
+                os.remove(OAUTH2_STORAGE_FILE)
             sys.exit(1)
 
     return build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, credentials=creds)  # Return authenticated API client
 
-def initialize_upload(youtube, options):
+def initialize_upload(youtubeclient, options):
     """Initialize and execute the upload process for a video to YouTube."""
     tags = None
     if options.keywords:  # Split keywords if provided
@@ -345,7 +352,7 @@ def initialize_upload(youtube, options):
             body['status']['targeting']['countries'] = options.geo.split(',')
 
     try:
-        insert_request = youtube.videos().insert(  # Create upload request
+        insert_request = youtubeclient.videos().insert(  # Create upload request
             part=",".join(body.keys()),
             body=body,
             media_body=MediaFileUpload(options.videofile, chunksize=-1, resumable=True)  # Enable resumable upload
@@ -357,21 +364,21 @@ def initialize_upload(youtube, options):
             sys.exit(1)  # Exit with non-zero status code
 
         if options.thumbnail:  # Upload thumbnail if provided
-            upload_thumbnail(youtube, response['id'], options.thumbnail)
+            upload_thumbnail(youtubeclient, response['id'], options.thumbnail)
 
         if options.playlistId:  # Add to playlist if specified
-            add_video_to_playlist(youtube, response['id'], options.playlistId)
+            add_video_to_playlist(youtubeclient, response['id'], options.playlistId)
 
-    except HttpError as e:  # Handle critical HTTP errors (e.g., 400 uploadLimitExceeded)
-        logger.error(f"Critical HTTP error during upload: status={e.resp.status}, content={e.content}")
+    except HttpError:  # Handle critical HTTP errors (e.g., 400 uploadLimitExceeded)
+        logger.exception("Critical HTTP error during upload: status=%d, content=%s", e.resp.status, e.content)
         sys.exit(1)  # Exit with non-zero status code
-    except Exception as e:  # Handle other unexpected errors
-        logger.error(f"Unexpected error during upload: {e}")
+    except Exception:  # Handle other unexpected errors
+        logger.exception("Unexpected error during upload")
         sys.exit(1)  # Exit with non-zero status code
 
-def add_video_to_playlist(youtube, video_id, playlist_id):
+def add_video_to_playlist(youtubeclient, video_id, playlist_id):
     """Add the uploaded video to a specified playlist."""
-    add_video_request = youtube.playlistItems().insert(
+    add_video_request = youtubeclient.playlistItems().insert(
         part="snippet",
         body={
             'snippet': {
@@ -383,20 +390,20 @@ def add_video_to_playlist(youtube, video_id, playlist_id):
             }
         }
     )
-    response = add_video_request.execute()  # Execute playlist addition
-    logger.info(f"Video {video_id} added to playlist {playlist_id}")
+    add_video_request.execute()  # Execute playlist addition
+    logger.info("Video %s added to playlist %s", video_id, playlist_id)
 
-def upload_thumbnail(youtube, video_id, thumbnail_path):
+def upload_thumbnail(youtubeclient, video_id, thumbnail_path):
     """Upload a thumbnail for the video if specified."""
     try:
-        request = youtube.thumbnails().set(
+        request = youtubeclient.thumbnails().set(
             videoId=video_id,
             media_body=MediaFileUpload(thumbnail_path)  # Upload thumbnail file
         )
         response = request.execute()
-        logger.info(f"Thumbnail uploaded for video {video_id}: {response}")
-    except HttpError as e:
-        logger.error(f"An error occurred while uploading the thumbnail: {e}")
+        logger.info("Thumbnail uploaded for video %d: %d", video_id, response)
+    except HttpError:
+        logger.exception("An error occurred while uploading the thumbnail")
 
 def resumable_upload(insert_request):
     """Implement resumable upload with exponential backoff strategy."""
@@ -406,18 +413,17 @@ def resumable_upload(insert_request):
     while response is None and retry <= MAX_RETRIES:  # Retry up to MAX_RETRIES
         try:
             logger.info("Uploading file...")
-            status, response = insert_request.next_chunk()  # Upload next chunk
+            _, response = insert_request.next_chunk()  # Upload next chunk
             if response is not None:
                 if 'id' in response:  # Check if upload succeeded
-                    logger.info(f"Video id '{response['id']}' was successfully uploaded.")
+                    logger.info("Video id %s was successfully uploaded.", response['id'])
                     return response
-                else:
-                    raise Exception(f"The upload failed with an unexpected response: {response}")
+                raise ValueError(f"The upload failed with an unexpected response: {response}")
         except HttpError as e:
             if e.resp.status in RETRIABLE_STATUS_CODES:  # Retry on specific HTTP errors
                 error = f"A retriable HTTP error {e.resp.status} occurred:\n{e.content}"
             else:
-                logger.error(f"Non-retriable HTTP error {e.resp.status} occurred: {e.content}")
+                logger.error("Non-retriable HTTP error %d occurred: %s", e.resp.status, e.content)
                 raise  # Raise non-retriable errors (e.g., 400)
         except RETRIABLE_EXCEPTIONS as e:  # Retry on specific exceptions
             error = f"A retriable error occurred: {e}"
@@ -426,11 +432,11 @@ def resumable_upload(insert_request):
             logger.error(error)
             retry += 1
             if retry > MAX_RETRIES:  # Return None if max retries exceeded
-                logger.error(f"Upload failed after {MAX_RETRIES} retries.")
+                logger.error("Upload failed after %d retries.", MAX_RETRIES)
                 return None
             max_sleep = 2 ** retry
             sleep_seconds = random.random() * max_sleep  # Exponential backoff
-            logger.info(f"Sleeping {sleep_seconds} seconds and then retrying...")
+            logger.info("Sleeping %d seconds and then retrying...", sleep_seconds)
             time.sleep(sleep_seconds)
 
     return None
@@ -458,7 +464,7 @@ if __name__ == '__main__':
     parser.add_argument("--gender", help="Gender targeting for the video ('male', 'female')")
     parser.add_argument("--geo", help="Geographic targeting (comma-separated ISO 3166-1 alpha-2 country codes)")
     parser.add_argument("--defaultAudioLanguage", help="Default audio language for the video")
-    
+
     auth_group = parser.add_argument_group('Authentication or debugging related options')
     auth_group.add_argument("--no-upload", action="store_true", help="Only authenticate, do not upload the video")
     auth_group.add_argument("--force-refresh", action="store_true", help="Force token refresh for debugging")
@@ -478,8 +484,8 @@ if __name__ == '__main__':
         else:
             logger.info("Authentication completed. No video uploaded.")
     except HttpError as e:  # Handle critical HTTP errors during upload
-        logger.error(f"An HTTP error {e.resp.status} occurred: {e.content}")
+        logger.error("An HTTP error %d occurred: %s", e.resp.status, e.content)
         sys.exit(1)  # Exit with non-zero status code
     except Exception as e:  # Handle other unexpected errors
-        logger.error(f"Unexpected error: {e}")
+        logger.exception("Unexpected error")
         sys.exit(1)  # Exit with non-zero status code
